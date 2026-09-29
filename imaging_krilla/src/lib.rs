@@ -307,6 +307,13 @@ impl<'s, 'p> KrillaSink<'s, 'p> {
         self.viewport = clip;
     }
 
+    /// Remove the viewport clip, returning it.
+    pub fn take_viewport_clip(&mut self) -> Option<Rect> {
+        let viewport = self.viewport;
+        self.set_viewport_clip(None);
+        viewport
+    }
+
     /// Start a tagged content section (see [`krilla::tagging`]).
     ///
     /// Returns `None` inside isolated groups, where tags can't be started.
@@ -572,7 +579,9 @@ impl<'s, 'p> KrillaSink<'s, 'p> {
         let (text, ranges) = match source {
             Some(source) => {
                 self.stats.glyph_runs_text += 1;
-                (source.text, source.glyph_ranges)
+                let mut ranges = source.glyph_ranges;
+                normalize_ranges(&mut ranges, source.text.len());
+                (source.text, ranges)
             }
             None => {
                 if outlined {
@@ -688,6 +697,26 @@ impl<'s, 'p> KrillaSink<'s, 'p> {
     }
 }
 
+/// Prepares glyph text ranges for krilla.
+///
+/// Right-to-left runs have their glyphs in visual order and their text in logical order.
+/// Viewers differ in how they reassemble such text (krilla marks strictly reversed runs as
+/// `/ReversedChars`, which breaks into fragments as soon as a cluster has several glyphs, e.g. an
+/// Arabic letter and its marks). To get the logical order reliably, the whole run is given
+/// one text range, so it is written as a single `/ActualText` span.
+fn normalize_ranges(ranges: &mut [Range<usize>], text_len: usize) {
+    let decreasing = ranges
+        .windows(2)
+        .any(|w| !w[0].is_empty() && !w[1].is_empty() && w[1].end <= w[0].start);
+    let increasing = ranges
+        .windows(2)
+        .any(|w| !w[0].is_empty() && !w[1].is_empty() && w[1].start >= w[0].end);
+    if decreasing && !increasing {
+        for range in ranges {
+            *range = 0..text_len;
+        }
+    }
+}
 fn empty_clip() -> Path {
     // A degenerate clip far away from any content, which clips everything.
     let mut builder = krilla::geom::PathBuilder::new();

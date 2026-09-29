@@ -35,7 +35,7 @@ use std::ops::Range;
 
 use accesskit::{TextDecoration, TextDecorationStyle};
 use kurbo::{Affine, Line, Stroke};
-use parley::{Layout, PositionedLayoutItem, Run, Style};
+use parley::{GlyphRun, Layout, PositionedLayoutItem, Run, Style};
 use peniko::{Brush, Fill};
 use smallvec::SmallVec;
 
@@ -130,6 +130,18 @@ fn is_bidi_control(c: char) -> bool {
     )
 }
 
+/// Removes leading and trailing bidi control characters from a text range.
+fn trim_bidi_controls(text: &str, mut range: Range<usize>) -> Range<usize> {
+    let Some(slice) = text.get(range.clone()) else {
+        return range;
+    };
+    let trimmed_start = slice.trim_start_matches(is_bidi_control);
+    range.start += slice.len() - trimmed_start.len();
+    let trimmed = trimmed_start.trim_end_matches(is_bidi_control);
+    range.end = range.start + trimmed.len();
+    range
+}
+
 /// Compute the text range of each glyph of `run`, in visual order.
 ///
 /// Glyphs of a cluster get the text range of that cluster. Clusters without glyphs
@@ -141,9 +153,12 @@ fn run_glyph_ranges(run: &Run<'_, BrushIndex>, text: &str) -> Vec<Range<usize>> 
     let mut owner: Option<usize> = None;
     let mut pending_start: Option<usize> = None;
     for (i, cluster) in clusters.iter().enumerate() {
-        let range = cluster.text_range();
+        let range = trim_bidi_controls(text, cluster.text_range());
         let has_glyphs = cluster.glyphs().next().is_some();
-        if has_glyphs {
+        if has_glyphs && range.is_empty() {
+            // Shapers render bidi controls as invisible glyphs; they get no text.
+            ranges[i] = Some(range);
+        } else if has_glyphs {
             let start = pending_start.take().unwrap_or(range.start).min(range.start);
             ranges[i] = Some(start..range.end);
             owner = Some(i);
@@ -195,10 +210,13 @@ pub fn render_text_with_source(
         // Glyph runs are slices of the glyphs of a (per-line) run, split by style.
         // Track which run we are in and how many of its glyphs we have seen so far.
         let mut run_cursor: Option<(usize, usize, Vec<Range<usize>>)> = None;
+        let mut glyph_runs: SmallVec<[(usize, GlyphRun<'_, BrushIndex>, Option<String>); 4]> =
+            SmallVec::new();
         for item in line.items() {
             let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                 continue;
             };
+            let mut logical_start = 0;
             let annotation = source.and_then(|text| {
                 let run = glyph_run.run();
                 let glyph_count = glyph_run.glyphs().count();
@@ -208,122 +226,157 @@ pub fn render_text_with_source(
                 };
                 let ranges = ranges.get(*offset..*offset + glyph_count)?;
                 *offset += glyph_count;
-                let start = ranges.iter().map(|r| r.start).min()?;
-                let end = ranges.iter().map(|r| r.end).max()?;
+                // Glyphs without text (e.g. bidi controls) have empty ranges and don't
+                // extend the text of the run.
+                let text_ranges = || ranges.iter().filter(|r| !r.is_empty());
+                let start = text_ranges()
+                    .map(|r| r.start)
+                    .min()
+                    .unwrap_or_else(|| ranges.first().map_or(0, |r| r.start));
+                let end = text_ranges().map(|r| r.end).max().unwrap_or(start);
+                logical_start = start;
+                let len = end - start;
+                let rebase = |offset: usize| offset.saturating_sub(start).min(len);
                 Some(
                     GlyphRunSource {
                         text: text.get(start..end)?.to_string(),
                         glyph_ranges: ranges
                             .iter()
-                            .map(|r| r.start - start..r.end - start)
+                            .map(|r| rebase(r.start)..rebase(r.end))
                             .collect(),
                     }
                     .encode(),
                 )
             });
-            let style = glyph_run.style();
-            // We draw underlines under the text, then the strikethrough on top, following:
-            // https://drafts.csswg.org/css-text-decor/#painting-order
-            if let Some(underline) = &style.underline {
-                let underline_brush = &brushes[underline.brush.0];
-                let run_metrics = glyph_run.run().metrics();
-                let offset = match underline.offset {
-                    Some(offset) => offset,
-                    None => run_metrics.underline_offset,
-                };
-                let width = match underline.size {
-                    Some(size) => size,
-                    None => run_metrics.underline_size,
-                };
-                // The `offset` is the distance from the baseline to the top of the underline
-                // so we move the line down by half the width
-                // Remember that we are using a y-down coordinate system
-                // If there's a custom width, because this is an underline, we want the custom
-                // width to go down from the default expectation
-                let y = glyph_run.baseline() - offset + width / 2.;
-
-                let line = Line::new(
-                    (glyph_run.offset() as f64, y as f64),
-                    ((glyph_run.offset() + glyph_run.advance()) as f64, y as f64),
-                );
-                painter
-                    .stroke(line, &Stroke::new(width.into()), underline_brush)
-                    .transform(transform)
-                    .draw();
-            }
-            let mut x = glyph_run.offset();
-            let y = glyph_run.baseline();
-            let run = glyph_run.run();
-            let font = run.font();
-            let font_size = run.font_size();
-            let synthesis = run.synthesis();
-            let glyph_xform = synthesis
-                .skew()
-                .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
-            let coords = run.normalized_coords();
-            let brush = &brushes[style.brush.0];
-            let glyphs: SmallVec<[Glyph; 16]> = glyph_run
-                .glyphs()
-                .map(|glyph| {
-                    let gx = x + glyph.x;
-                    let gy = y + glyph.y;
-                    x += glyph.advance;
-                    Glyph {
-                        id: glyph.id,
-                        x: gx,
-                        y: gy,
-                    }
-                })
-                .collect();
-            if let Some(annotation) = &annotation {
-                painter.push_context_ref(ContextRef::named_str(
-                    GLYPH_RUN_SOURCE_CONTEXT,
-                    annotation,
-                    None,
-                ));
-            }
-            painter
-                .glyphs(font, brush)
-                .hint(hint)
-                .transform(transform)
-                .glyph_transform(glyph_xform)
-                .font_size(font_size)
-                .normalized_coords(coords)
-                .draw(&peniko::Style::Fill(Fill::NonZero), &glyphs);
-            if annotation.is_some() {
-                painter.pop_context();
-            }
-
-            if let Some(strikethrough) = &style.strikethrough {
-                let strikethrough_brush = &brushes[strikethrough.brush.0];
-                let run_metrics = glyph_run.run().metrics();
-                let offset = match strikethrough.offset {
-                    Some(offset) => offset,
-                    None => run_metrics.strikethrough_offset,
-                };
-                let width = match strikethrough.size {
-                    Some(size) => size,
-                    None => run_metrics.strikethrough_size,
-                };
-                // The `offset` is the distance from the baseline to the *top* of the strikethrough
-                // so we calculate the middle y-position of the strikethrough based on the font's
-                // standard strikethrough width.
-                // Remember that we are using a y-down coordinate system
-                let y = glyph_run.baseline() - offset + run_metrics.strikethrough_size / 2.;
-
-                let line = Line::new(
-                    (glyph_run.offset() as f64, y as f64),
-                    ((glyph_run.offset() + glyph_run.advance()) as f64, y as f64),
-                );
-                painter
-                    .stroke(line, &Stroke::new(width.into()), strikethrough_brush)
-                    .transform(transform)
-                    .draw();
-            }
+            glyph_runs.push((logical_start, glyph_run, annotation));
+        }
+        if source.is_some() {
+            // Glyph runs are positioned independently, so drawing them in logical (text)
+            // order instead of visual order renders the same, but makes the order of the
+            // drawing commands match the reading order (e.g. for text extraction in PDFs).
+            glyph_runs.sort_by_key(|(logical_start, _, _)| *logical_start);
+        }
+        for (_, glyph_run, annotation) in &glyph_runs {
+            draw_glyph_run(
+                painter,
+                transform,
+                glyph_run,
+                brushes,
+                hint,
+                annotation.as_deref(),
+            );
         }
     }
 }
 
+fn draw_glyph_run(
+    painter: &mut Painter<'_, impl PaintSink + ?Sized>,
+    transform: Affine,
+    glyph_run: &GlyphRun<'_, BrushIndex>,
+    brushes: &[Brush],
+    hint: bool,
+    annotation: Option<&str>,
+) {
+    let style = glyph_run.style();
+    // We draw underlines under the text, then the strikethrough on top, following:
+    // https://drafts.csswg.org/css-text-decor/#painting-order
+    if let Some(underline) = &style.underline {
+        let underline_brush = &brushes[underline.brush.0];
+        let run_metrics = glyph_run.run().metrics();
+        let offset = match underline.offset {
+            Some(offset) => offset,
+            None => run_metrics.underline_offset,
+        };
+        let width = match underline.size {
+            Some(size) => size,
+            None => run_metrics.underline_size,
+        };
+        // The `offset` is the distance from the baseline to the top of the underline
+        // so we move the line down by half the width
+        // Remember that we are using a y-down coordinate system
+        // If there's a custom width, because this is an underline, we want the custom
+        // width to go down from the default expectation
+        let y = glyph_run.baseline() - offset + width / 2.;
+
+        let line = Line::new(
+            (glyph_run.offset() as f64, y as f64),
+            ((glyph_run.offset() + glyph_run.advance()) as f64, y as f64),
+        );
+        painter
+            .stroke(line, &Stroke::new(width.into()), underline_brush)
+            .transform(transform)
+            .draw();
+    }
+    let mut x = glyph_run.offset();
+    let y = glyph_run.baseline();
+    let run = glyph_run.run();
+    let font = run.font();
+    let font_size = run.font_size();
+    let synthesis = run.synthesis();
+    let glyph_xform = synthesis
+        .skew()
+        .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
+    let coords = run.normalized_coords();
+    let brush = &brushes[style.brush.0];
+    let glyphs: SmallVec<[Glyph; 16]> = glyph_run
+        .glyphs()
+        .map(|glyph| {
+            let gx = x + glyph.x;
+            let gy = y + glyph.y;
+            x += glyph.advance;
+            Glyph {
+                id: glyph.id,
+                x: gx,
+                y: gy,
+            }
+        })
+        .collect();
+    if let Some(annotation) = annotation {
+        painter.push_context_ref(ContextRef::named_str(
+            GLYPH_RUN_SOURCE_CONTEXT,
+            annotation,
+            None,
+        ));
+    }
+    painter
+        .glyphs(font, brush)
+        .hint(hint)
+        .transform(transform)
+        .glyph_transform(glyph_xform)
+        .font_size(font_size)
+        .normalized_coords(coords)
+        .draw(&peniko::Style::Fill(Fill::NonZero), &glyphs);
+    if annotation.is_some() {
+        painter.pop_context();
+    }
+
+    if let Some(strikethrough) = &style.strikethrough {
+        let strikethrough_brush = &brushes[strikethrough.brush.0];
+        let run_metrics = glyph_run.run().metrics();
+        let offset = match strikethrough.offset {
+            Some(offset) => offset,
+            None => run_metrics.strikethrough_offset,
+        };
+        let width = match strikethrough.size {
+            Some(size) => size,
+            None => run_metrics.strikethrough_size,
+        };
+        // The `offset` is the distance from the baseline to the *top* of the strikethrough
+        // so we calculate the middle y-position of the strikethrough based on the font's
+        // standard strikethrough width.
+        // Remember that we are using a y-down coordinate system
+        let y = glyph_run.baseline() - offset + run_metrics.strikethrough_size / 2.;
+
+        let line = Line::new(
+            (glyph_run.offset() as f64, y as f64),
+            ((glyph_run.offset() + glyph_run.advance()) as f64, y as f64),
+        );
+        painter
+            .stroke(line, &Stroke::new(width.into()), strikethrough_brush)
+            .transform(transform)
+            .draw();
+    }
+}
 fn to_accesskit_color(brush: &Brush) -> Option<accesskit::Color> {
     if let Brush::Solid(color) = brush {
         let rgba = color.to_rgba8();

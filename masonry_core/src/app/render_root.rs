@@ -649,6 +649,11 @@ impl RenderRoot {
         }
     }
 
+    /// Returns the current scale factor.
+    pub fn scale_factor(&self) -> f64 {
+        self.global_state.scale_factor
+    }
+
     /// Returns whether paint annotations are enabled.
     ///
     /// See [`set_paint_annotations`](Self::set_paint_annotations).

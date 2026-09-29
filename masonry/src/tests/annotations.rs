@@ -209,10 +209,11 @@ fn base_direction_rtl_aligns_to_the_right_without_marks_in_text() {
         let mut root = create_render_root(Flex::column().with_fixed(label).prepare(), 200);
         root.set_paint_annotations(true);
         let recorder = record(&mut root);
+        // Skip the invisible glyph of the direction mark, which has no text.
         let run = recorder
             .runs
             .iter()
-            .find(|run| !run.glyphs.is_empty())
+            .find(|run| run.source.as_ref().is_some_and(|s| !s.text.is_empty()))
             .unwrap();
         let source = run.source.clone().unwrap();
         (run.glyphs[0].x, source)
