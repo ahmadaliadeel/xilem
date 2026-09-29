@@ -32,7 +32,8 @@ members = [
 
 [workspace.package]
 # Xilem version, also used by other packages which want to mimic Xilem's version.
-# Right now those packages include: xilem_core, xilem_masonry, xilem_web, masonry, masonry_core, masonry_imaging, masonry_testing, masonry_winit.
+# Right now those packages include: xilem_core, xilem_masonry, xilem_web, masonry, masonry_core, masonry_imaging, masonry_testing, masonry_winit,
+# imaging_krilla, masonry_print, xilem_print.
 #
 # NOTE: When bumping this, remember to also bump the aforementioned other packages'
 #       version in the dependencies section of this file.

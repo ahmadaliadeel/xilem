@@ -141,6 +141,27 @@ fn capture_view_snapshot() {
 
 #[test]
 #[ignore = "manual inspection"]
+fn render_example_pngs() {
+    let dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/xilem_print_out");
+    let temp = std::env::temp_dir();
+    for (name, source) in [
+        ("invoice_en", dir.join("invoice_en.pdf")),
+        ("invoice_ur_rtl", dir.join("invoice_ur_rtl.pdf")),
+        ("app_window", temp.join("xilem_invoice_window.pdf")),
+        ("app_area", temp.join("xilem_invoice_area.pdf")),
+    ] {
+        let Ok(bytes) = std::fs::read(source) else {
+            continue;
+        };
+        let r = masonry_print::testing::rasterize(&bytes, 0, 1.2);
+        let img = image::RgbaImage::from_raw(r.width, r.height, r.data).unwrap();
+        img.save(dir.join(format!("{name}.png"))).unwrap();
+    }
+}
+
+#[test]
+#[ignore = "manual inspection"]
 fn render_invoice_png() {
     let out =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/xilem_print_tests");
@@ -148,4 +169,38 @@ fn render_invoice_png() {
     let r = masonry_print::testing::rasterize(&bytes, 0, 1.2);
     let img = image::RgbaImage::from_raw(r.width, r.height, r.data).unwrap();
     img.save(out.join("invoice.page0.png")).unwrap();
+}
+
+#[test]
+fn print_job_snapshots_a_region_of_a_root() {
+    use xilem_print::{
+        PrintJob, PrintOutput, SnapshotPage, SnapshotTarget, build_widget, execute_print_job,
+        print_region,
+    };
+
+    let mut state = invoice();
+    let view = flex_col((
+        label("Toolbar (not printed)"),
+        print_region("invoice", items_table(&invoice())),
+    ));
+    let widget = build_widget(&mut state, &view);
+    let mut root = masonry_print::HeadlessRoot::new(
+        widget,
+        masonry_print::HeadlessOptions::new(
+            Size::new(400.0, 300.0),
+            Arc::new(masonry_print::print_property_set()),
+        )
+        .with_fonts(fonts()),
+    );
+    let path = std::env::temp_dir().join("xilem_print_job_test.pdf");
+    let job = PrintJob::window()
+        .target(SnapshotTarget::Region("invoice".into()))
+        .page(SnapshotPage::Paper(PageSetup::a4()))
+        .output(PrintOutput::Save(path.clone()));
+    let result = execute_print_job(root.render_root(), xilem::peniko::Color::WHITE, &job).unwrap();
+    assert_eq!(result.path, path);
+    assert_eq!(result.pages, 1);
+    let text = &extract_text(&std::fs::read(&path).unwrap())[0];
+    assert!(text.starts_with("Item"), "{text}");
+    assert!(!text.contains("Toolbar"), "{text}");
 }

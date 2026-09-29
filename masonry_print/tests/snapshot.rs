@@ -105,3 +105,32 @@ fn widget_snapshot_only_prints_that_widget() {
     let text = &extract_text(&pdf.bytes)[0];
     assert_eq!(text, URDU);
 }
+
+#[test]
+fn scrolled_out_content_is_not_printed() {
+    use masonry::kurbo::Point;
+    use masonry::widgets::Portal;
+
+    let tag = WidgetTag::named("portal");
+    let mut column = Flex::column();
+    for i in 0..30 {
+        column = column.with_fixed(Label::new(format!("Row {i}")).prepare());
+    }
+    let portal = NewWidget::new(Portal::new(column.prepare())).with_tag(tag);
+    let mut root = headless(portal, Size::new(200., 100.));
+    root.render_root().edit_widget_with_tag(tag, |mut portal| {
+        Portal::set_viewport_pos(&mut portal, Point::new(0., 300.));
+    });
+    let capture = capture(root.render_root());
+    let pdf = write_snapshot(&capture, &SnapshotOptions::default()).unwrap();
+    let text = &extract_text(&pdf.bytes)[0];
+    assert!(
+        !text.contains("Row 0\n"),
+        "scrolled out rows must not be in the PDF: {text}"
+    );
+    assert!(
+        !text.contains("Row 29"),
+        "rows below the viewport must not be in the PDF: {text}"
+    );
+    assert!(text.lines().count() < 10, "only visible rows: {text}");
+}

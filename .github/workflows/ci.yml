@@ -18,6 +18,9 @@ env:
     --exclude xilem
     --exclude xilem_masonry
     --exclude placehero
+    --exclude imaging_krilla
+    --exclude masonry_print
+    --exclude xilem_print
   # Only some of our examples support Android (primarily due to extra required boilerplate).
   ANDROID_TARGETS: >-
     -p xilem

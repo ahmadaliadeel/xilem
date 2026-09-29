@@ -134,7 +134,8 @@ impl Default for KrillaSinkOptions {
 /// `glyph_ranges[i]` is the byte range in `text` of the cluster that glyph `i` belongs to,
 /// in the same (visual) order as the glyphs of the run.
 /// Several glyphs may share a range (e.g. a base glyph and its marks), and one glyph may
-/// cover several characters (e.g. a ligature).
+/// cover several characters (e.g. a ligature). Glyphs with an empty range are considered
+/// invisible (e.g. shaped bidi control characters) and are not drawn.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TextSource {
     /// The text covered by the glyph run.
@@ -884,11 +885,24 @@ impl PaintSink for KrillaSink<'_, '_> {
     }
 
     fn glyph_run(&mut self, draw: GlyphRunRef<'_>, glyphs: &mut dyn Iterator<Item = Glyph>) {
-        let glyphs: Vec<Glyph> = glyphs.collect();
-        let source = self
+        let mut glyphs: Vec<Glyph> = glyphs.collect();
+        let mut source = self
             .next_text
             .take()
             .filter(|source| source.is_valid_for(glyphs.len()));
+        if let Some(source) = &mut source {
+            // Glyphs without text are invisible (e.g. bidi controls); they would have no
+            // Unicode mapping, which PDF/A and PDF/UA forbid, so they are not drawn.
+            if source.glyph_ranges.iter().any(Range::is_empty) {
+                let keep: Vec<bool> = source.glyph_ranges.iter().map(|r| !r.is_empty()).collect();
+                let mut kept = keep.iter();
+                glyphs.retain(|_| *kept.next().unwrap_or(&true));
+                source.glyph_ranges.retain(|r| !r.is_empty());
+                if glyphs.is_empty() {
+                    return;
+                }
+            }
+        }
         self.sync_clips();
         let blended = self.push_blend(draw.composite);
         self.draw_glyphs(&draw, &glyphs, source);

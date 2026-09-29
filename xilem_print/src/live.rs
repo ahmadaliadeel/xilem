@@ -3,7 +3,6 @@
 
 //! Printing the windows of a running Xilem app.
 
-use std::any::Any;
 use std::cell::RefCell;
 use std::fmt;
 use std::path::PathBuf;
@@ -75,13 +74,15 @@ impl fmt::Display for PrintJobError {
 
 impl std::error::Error for PrintJobError {}
 
-type OnDone<State> = Box<dyn FnOnce(&mut State, Result<PrintResult, PrintJobError>)>;
+type OnDone = Box<dyn FnOnce(Result<PrintResult, PrintJobError>)>;
 
 /// A request to print a window (or part of it) of the running app.
 ///
 /// Submit it with [`request_print`] from any callback; it runs right after the callback,
-/// if the app was started with [`run_with_printing`].
-pub struct PrintJob<State> {
+/// if the app was started with [`run_with_printing`]. The views are rebuilt afterwards, so
+/// results stored by [`on_done`](Self::on_done) (e.g. in an `Rc<RefCell<_>>` held by the app
+/// state) are shown right away.
+pub struct PrintJob {
     /// The window, or `None` for the window in which the action happened.
     pub window: Option<WindowId>,
     /// What to print.
@@ -94,11 +95,11 @@ pub struct PrintJob<State> {
     pub pdf: PdfOptions,
     /// What to do with the PDF.
     pub output: PrintOutput,
-    /// Called with the result, with access to the app state.
-    pub on_done: Option<OnDone<State>>,
+    /// Called with the result.
+    pub on_done: Option<OnDone>,
 }
 
-impl<State> fmt::Debug for PrintJob<State> {
+impl fmt::Debug for PrintJob {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PrintJob")
             .field("window", &self.window)
@@ -109,7 +110,7 @@ impl<State> fmt::Debug for PrintJob<State> {
     }
 }
 
-impl<State> PrintJob<State> {
+impl PrintJob {
     /// A job printing the whole window, sized to its content, saved to a temporary file.
     pub fn window() -> Self {
         Self {
@@ -158,7 +159,7 @@ impl<State> PrintJob<State> {
     /// Sets the callback receiving the result.
     pub fn on_done(
         mut self,
-        on_done: impl FnOnce(&mut State, Result<PrintResult, PrintJobError>) + 'static,
+        on_done: impl FnOnce(Result<PrintResult, PrintJobError>) + 'static,
     ) -> Self {
         self.on_done = Some(Box::new(on_done));
         self
@@ -166,25 +167,25 @@ impl<State> PrintJob<State> {
 }
 
 thread_local! {
-    static JOBS: RefCell<Vec<Box<dyn Any>>> = const { RefCell::new(Vec::new()) };
+    static JOBS: RefCell<Vec<PrintJob>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Requests printing a window of the running app.
 ///
 /// Call this from a view callback; the job runs as soon as the callback returns.
 /// The app must be started with [`run_with_printing`].
-pub fn request_print<State: 'static>(job: PrintJob<State>) {
-    JOBS.with(|jobs| jobs.borrow_mut().push(Box::new(job)));
+pub fn request_print(job: PrintJob) {
+    JOBS.with(|jobs| jobs.borrow_mut().push(job));
 }
 
 /// Runs a print job on a render root.
 ///
 /// This is what [`PrintingDriver`] does for each requested job; it is public for testing and
 /// for custom drivers.
-pub fn execute_print_job<State>(
+pub fn execute_print_job(
     root: &mut RenderRoot,
     base_color: Color,
-    job: &PrintJob<State>,
+    job: &PrintJob,
 ) -> Result<PrintResult, PrintJobError> {
     let options = SnapshotOptions {
         target: job.target.clone(),
@@ -238,11 +239,7 @@ where
 
     fn run_jobs(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_>) {
         let jobs = JOBS.with(|jobs| std::mem::take(&mut *jobs.borrow_mut()));
-        for job in jobs {
-            let Ok(mut job) = job.downcast::<PrintJob<State>>() else {
-                tracing::error!("print job for a different app state type");
-                continue;
-            };
+        for mut job in jobs {
             let window = job.window.unwrap_or(window_id);
             let base_color = *ctx.window(window).base_color();
             let result = execute_print_job(ctx.render_root(window), base_color, &job);
@@ -250,7 +247,9 @@ where
                 tracing::warn!("print job failed: {error}");
             }
             if let Some(on_done) = job.on_done.take() {
-                self.inner.update_state(ctx, |state| on_done(state, result));
+                on_done(result);
+                // Rebuild the views, so they can show the result.
+                self.inner.update_state(ctx, |_| {});
             }
         }
     }

@@ -123,6 +123,13 @@ pub(crate) struct SemanticSink<'a, 't, 's, 'p> {
     /// Transform from capture coordinates to the layer being replayed is applied by the plan,
     /// so draw transforms are in capture coordinates.
     tolerance: f64,
+    /// Bounds of the current clip (intersection of all clips), in capture coordinates.
+    ///
+    /// Content entirely outside of it is not written at all: clipped text would still be
+    /// selectable and searchable in the PDF.
+    clip_bounds: Vec<Rect>,
+    /// Whether each open group pushed a clip bound.
+    group_clips: Vec<bool>,
 }
 
 impl<'a, 't, 's, 'p> SemanticSink<'a, 't, 's, 'p> {
@@ -140,6 +147,8 @@ impl<'a, 't, 's, 'p> SemanticSink<'a, 't, 's, 'p> {
             contexts: Vec::new(),
             current_tag: None,
             tolerance: 0.1,
+            clip_bounds: Vec::new(),
+            group_clips: Vec::new(),
         }
     }
 
@@ -164,9 +173,45 @@ impl<'a, 't, 's, 'p> SemanticSink<'a, 't, 's, 'p> {
         }
     }
 
+    fn push_clip_bounds(&mut self, clip: &ClipRef<'_>) {
+        let bounds = match clip {
+            ClipRef::Fill {
+                transform, shape, ..
+            } => {
+                transform.transform_rect_bbox(shape.clone().to_path(self.tolerance).bounding_box())
+            }
+            ClipRef::Stroke {
+                transform,
+                shape,
+                stroke,
+            } => {
+                let half = stroke.width / 2.0;
+                transform.transform_rect_bbox(
+                    shape
+                        .clone()
+                        .to_path(self.tolerance)
+                        .bounding_box()
+                        .inflate(half, half),
+                )
+            }
+        };
+        let bounds = match self.clip_bounds.last() {
+            Some(current) => current.intersect(bounds),
+            None => bounds,
+        };
+        self.clip_bounds.push(bounds);
+    }
+
+    /// Whether content with the given bounds is (partly) visible within the current clip.
+    fn visible(&self, bounds: Rect) -> bool {
+        self.clip_bounds
+            .last()
+            .is_none_or(|clip| clip.width() > 0.0 && clip.height() > 0.0 && clip.overlaps(bounds))
+    }
+
     /// Whether non-text content with the given bounds (in capture coordinates) is drawn.
     fn draws_bounds(&self, bounds: Rect) -> bool {
-        if !self.in_subtree() {
+        if !self.in_subtree() || !self.visible(bounds) {
             return false;
         }
         match self.filter {
@@ -278,10 +323,12 @@ impl PaintSink for SemanticSink<'_, '_, '_, '_> {
     }
 
     fn push_clip(&mut self, clip: ClipRef<'_>) {
+        self.push_clip_bounds(&clip);
         self.inner.push_clip(clip);
     }
 
     fn pop_clip(&mut self) {
+        self.clip_bounds.pop();
         self.inner.pop_clip();
     }
 
@@ -290,10 +337,17 @@ impl PaintSink for SemanticSink<'_, '_, '_, '_> {
             let key = self.tag_key(true, false);
             self.ensure_tag(key);
         }
+        if let Some(clip) = &group.clip {
+            self.push_clip_bounds(clip);
+        }
+        self.group_clips.push(group.clip.is_some());
         self.inner.push_group(group);
     }
 
     fn pop_group(&mut self) {
+        if self.group_clips.pop() == Some(true) {
+            self.clip_bounds.pop();
+        }
         self.inner.pop_group();
     }
 
@@ -333,6 +387,21 @@ impl PaintSink for SemanticSink<'_, '_, '_, '_> {
             return;
         };
         if !self.in_subtree() {
+            return;
+        }
+        // Rough bounds of the run: glyphs extend about one em around their origin.
+        let size = f64::from(draw.font_size);
+        let run_bounds = glyphs
+            .iter()
+            .map(|g| {
+                let origin = masonry::kurbo::Point::new(f64::from(g.x), f64::from(g.y));
+                Rect::from_center_size(origin, (2.0 * size, 2.0 * size))
+            })
+            .fold(
+                Rect::ZERO,
+                |acc, r| if acc == Rect::ZERO { r } else { acc.union(r) },
+            );
+        if !self.visible(draw.transform.transform_rect_bbox(run_bounds)) {
             return;
         }
         if let ContentFilter::Slice { y0, y1 } = self.filter {
