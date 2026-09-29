@@ -39,23 +39,33 @@
 
 mod access;
 mod capture;
+mod document;
 mod fonts;
 mod headless;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod os_print;
 mod page;
+mod paginate;
 mod sink;
 mod snapshot;
 mod tagging;
 #[cfg(feature = "testing")]
 pub mod testing;
+pub mod widgets;
 mod writer;
 
 pub use access::{AccessIndex, TextLine};
 pub use capture::{Capture, capture};
+pub use document::{
+    DocumentPart, NoDecorations, NumberSystem, PRINT_TEXT_COLOR, PageDecorations, PageInfo,
+    WidgetDecorations, document_properties, paginate_to_pdf, print_property_set,
+};
 #[cfg(feature = "noto-fonts")]
 pub use fonts::noto;
 pub use fonts::{FontFallback, FontSetup};
 pub use headless::{HeadlessOptions, HeadlessRoot};
 pub use page::{Length, Margins, Orientation, PT_PER_PX, PageSetup, PaperSize};
+pub use paginate::{Atom, FlowGeometry, PageSlice, flow_geometry, paginate};
 pub use sink::ContentFilter;
 pub use snapshot::{
     SnapshotOptions, SnapshotPage, SnapshotTarget, snapshot_to_pdf, write_snapshot,

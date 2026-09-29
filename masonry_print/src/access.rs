@@ -183,7 +183,7 @@ impl AccessIndex {
         lines
     }
 
-    /// All text of a node and its descendants (TextRun values), in tree order.
+    /// All text of a node and its descendants (`TextRun` values), in tree order.
     pub fn text_content(&self, id: u64) -> String {
         let mut out = String::new();
         let mut stack = vec![id];

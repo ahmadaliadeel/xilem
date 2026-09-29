@@ -40,7 +40,12 @@ fn owner_tag(access: &AccessIndex, id: u64) -> TagKind {
                 .and_then(|l| u16::try_from(l).ok())
                 .and_then(NonZeroU16::new)
                 .unwrap_or(NonZeroU16::MIN);
-            with_lang(Tag::Hn(level, None), lang)
+            // PDF/UA requires headings to have a title.
+            let title = node
+                .label()
+                .map(str::to_string)
+                .unwrap_or_else(|| access.text_content(id));
+            with_lang(Tag::Hn(level, Some(title.trim().to_string())), lang)
         }
         Role::Link => with_lang(Tag::Link, lang),
         Role::Image | Role::Figure => with_lang(Tag::Figure(alt_text(access, id)), lang),

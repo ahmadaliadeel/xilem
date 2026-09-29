@@ -98,6 +98,41 @@ pub struct PdfDate {
     pub second: u8,
 }
 
+impl PdfDate {
+    /// The current date and time (UTC).
+    pub fn now() -> Self {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        Self::from_unix(secs)
+    }
+
+    /// The date and time (UTC) of a Unix timestamp.
+    pub fn from_unix(secs: u64) -> Self {
+        let days = i64::try_from(secs / 86_400).unwrap_or(0);
+        let rem = secs % 86_400;
+        // Civil-from-days (Howard Hinnant's algorithm).
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + i64::from(month <= 2);
+        let narrow = |v: i64| u8::try_from(v).unwrap_or(0);
+        Self {
+            year: u16::try_from(year).unwrap_or(1970),
+            month: narrow(month),
+            day: narrow(day),
+            hour: narrow(i64::try_from(rem / 3600).unwrap_or(0)),
+            minute: narrow(i64::try_from(rem % 3600 / 60).unwrap_or(0)),
+            second: narrow(i64::try_from(rem % 60).unwrap_or(0)),
+        }
+    }
+}
+
 /// Options for writing PDF documents.
 #[derive(Clone, Debug)]
 pub struct PdfOptions {
@@ -449,7 +484,12 @@ impl PdfWriter {
         if !self.options.keywords.is_empty() {
             metadata = metadata.keywords(self.options.keywords.clone());
         }
-        if let Some(date) = self.options.creation_date {
+        // PDF/A requires a document date.
+        let date = self
+            .options
+            .creation_date
+            .or_else(|| (self.options.standard != PdfStandard::Plain).then(PdfDate::now));
+        if let Some(date) = date {
             metadata = metadata.creation_date(
                 DateTime::new(date.year)
                     .month(date.month)

@@ -33,7 +33,7 @@ tracing.workspace = true
 [dev-dependencies]
 image = { workspace = true, features = ["png"] }
 imaging_vello_cpu.workspace = true
-masonry_print = { path = ".", features = ["testing"] }
+masonry_print = { path = ".", features = ["testing", "noto-fonts"] }
 masonry = { workspace = true, features = ["testing"] }
 masonry_testing.workspace = true
 
