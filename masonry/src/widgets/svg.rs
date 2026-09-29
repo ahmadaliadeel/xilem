@@ -14,7 +14,7 @@ use crate::core::{
     PropertiesRef, Property, RegisterCtx, Update, UpdateCtx, UsesProperty, Widget, WidgetId,
     WidgetMut,
 };
-use crate::imaging::Painter;
+use crate::imaging::{ContextRef, Painter};
 use crate::kurbo::{Affine, Axis, Size};
 use crate::layout::{LenReq, Length};
 use crate::peniko::{ImageAlphaType, ImageBrush, ImageData, ImageFormat};
@@ -30,6 +30,13 @@ use crate::properties::ObjectFit;
 /// meaning that its preferred logical size is 64px.
 /// That way the SVG looks good at any scale and doesn't shift the layout around.
 const SVG_SCALE: f64 = 1.0;
+
+/// The name of the [context annotation](ContextRef) that [`Svg`] wraps around its (rasterized)
+/// image when [paint annotations](crate::app::RenderRoot::set_paint_annotations) are enabled.
+///
+/// Its value is the transform from the SVG tree's coordinates to the image's coordinates, as
+/// six comma-separated [`Affine`] coefficients.
+pub const SVG_TRANSFORM_CONTEXT: &str = "masonry.svg_transform";
 
 /// A widget that renders an SVG.
 ///
@@ -76,6 +83,14 @@ impl Svg {
     pub fn with_alt_text(mut self, alt_text: impl Into<ArcStr>) -> Self {
         self.alt_text = Some(alt_text.into());
         self
+    }
+}
+
+// --- MARK: METHODS
+impl Svg {
+    /// Returns the SVG tree.
+    pub fn tree(&self) -> &Arc<Tree> {
+        &self.tree
     }
 }
 
@@ -216,9 +231,31 @@ impl Widget for Svg {
 
         let image = self.rasterized.as_ref().unwrap();
 
+        // With paint annotations, let backends that can draw SVG natively (e.g. PDF) replace
+        // the rasterized image with the vector tree, see `SVG_TRANSFORM_CONTEXT`.
+        let annotation = ctx.paint_annotations_enabled().then(|| {
+            let cache = ctx.property_cache();
+            let object_fit = props.get::<ObjectFit>(cache);
+            let svg_size = self.tree.size();
+            let svg_size = Size::new(svg_size.width() as f64, svg_size.height() as f64);
+            let [a, b, c, d, e, f] = object_fit
+                .affine(content_box.size().to_rect(), svg_size.to_rect())
+                .as_coeffs();
+            format!("{a},{b},{c},{d},{e},{f}")
+        });
+        if let Some(annotation) = &annotation {
+            painter.push_context_ref(ContextRef::named_str(
+                SVG_TRANSFORM_CONTEXT,
+                annotation,
+                None,
+            ));
+        }
         painter.with_fill_clip(content_box, |painter| {
             painter.draw_image(image, Affine::IDENTITY);
         });
+        if annotation.is_some() {
+            painter.pop_context();
+        }
     }
 
     fn accessibility_role(&self) -> Role {

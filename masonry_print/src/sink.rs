@@ -4,8 +4,10 @@
 //! A paint sink that interprets Masonry's paint annotations while writing PDF content.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use imaging_krilla::krilla::tagging::{Artifact, ArtifactType, ContentTag, Identifier, SpanTag};
+use imaging_krilla::usvg::Tree;
 use imaging_krilla::{KrillaSink, KrillaSinkStats, TextSource};
 use masonry::accesskit::Role;
 use masonry::core::{GLYPH_RUN_SOURCE_CONTEXT, GlyphRunSource};
@@ -14,8 +16,9 @@ use masonry::imaging::{
     BlurredRoundedRect, ClipRef, ContextKindRef, ContextRef, ContextValueRef, FillRef, GlyphRunRef,
     GroupRef, PaintSink, StrokeRef,
 };
-use masonry::kurbo::{Rect, Shape as _};
+use masonry::kurbo::{Affine, Rect, Shape as _};
 use masonry::peniko::BrushRef;
+use masonry::widgets::SVG_TRANSFORM_CONTEXT;
 
 use crate::access::AccessIndex;
 
@@ -108,7 +111,18 @@ enum TagKey {
 enum Ctx {
     Widget(u64),
     Text(Option<GlyphRunSource>),
+    /// An `Svg` widget's image, with the transform from the SVG tree to the image.
+    Svg(Affine),
     Other,
+}
+
+fn parse_affine(value: &str) -> Option<Affine> {
+    let mut coeffs = [0.0; 6];
+    let mut parts = value.split(',');
+    for coeff in &mut coeffs {
+        *coeff = parts.next()?.trim().parse().ok()?;
+    }
+    Some(Affine::new(coeffs))
 }
 
 /// Wraps a [`KrillaSink`], interpreting widget and text source annotations to
@@ -116,6 +130,7 @@ enum Ctx {
 pub(crate) struct SemanticSink<'a, 't, 's, 'p> {
     inner: KrillaSink<'s, 'p>,
     access: &'a AccessIndex,
+    svgs: &'a HashMap<u64, Arc<Tree>>,
     filter: ContentFilter,
     tagging: Tagging<'t>,
     contexts: Vec<Ctx>,
@@ -136,12 +151,14 @@ impl<'a, 't, 's, 'p> SemanticSink<'a, 't, 's, 'p> {
     pub(crate) fn new(
         inner: KrillaSink<'s, 'p>,
         access: &'a AccessIndex,
+        svgs: &'a HashMap<u64, Arc<Tree>>,
         filter: ContentFilter,
         tagging: Tagging<'t>,
     ) -> Self {
         Self {
             inner,
             access,
+            svgs,
             filter,
             tagging,
             contexts: Vec::new(),
@@ -295,6 +312,16 @@ impl<'a, 't, 's, 'p> SemanticSink<'a, 't, 's, 'p> {
         self.current_tag = Some(key);
     }
 
+    /// The SVG tree and transform of the innermost `Svg` widget, if we're painting one.
+    fn svg(&self) -> Option<(Arc<Tree>, Affine)> {
+        let transform = self.contexts.iter().rev().find_map(|ctx| match ctx {
+            Ctx::Svg(transform) => Some(*transform),
+            _ => None,
+        })?;
+        let widget = self.widgets().next_back()?;
+        Some((self.svgs.get(&widget)?.clone(), transform))
+    }
+
     fn text_source(&self) -> Option<TextSource> {
         self.contexts.iter().rev().find_map(|ctx| match ctx {
             Ctx::Text(Some(source)) => Some(TextSource {
@@ -312,6 +339,9 @@ impl PaintSink for SemanticSink<'_, '_, '_, '_> {
             (ContextKindRef::Widget, ContextValueRef::U64(id)) => Ctx::Widget(id),
             (ContextKindRef::Named(GLYPH_RUN_SOURCE_CONTEXT), ContextValueRef::Str(value)) => {
                 Ctx::Text(GlyphRunSource::decode(value))
+            }
+            (ContextKindRef::Named(SVG_TRANSFORM_CONTEXT), ContextValueRef::Str(value)) => {
+                parse_affine(value).map_or(Ctx::Other, Ctx::Svg)
             }
             _ => Ctx::Other,
         };
@@ -361,6 +391,12 @@ impl PaintSink for SemanticSink<'_, '_, '_, '_> {
         let is_image = matches!(draw.brush, BrushRef::Image(_));
         let key = self.tag_key(false, is_image);
         self.ensure_tag(key);
+        if is_image && let Some((tree, svg_transform)) = self.svg() {
+            // Draw the vector SVG instead of its rasterized image.
+            if self.inner.draw_svg(draw.transform * svg_transform, &tree) {
+                return;
+            }
+        }
         self.inner.fill(draw);
     }
 

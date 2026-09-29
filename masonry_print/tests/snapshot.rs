@@ -134,3 +134,38 @@ fn scrolled_out_content_is_not_printed() {
     );
     assert!(text.lines().count() < 10, "only visible rows: {text}");
 }
+
+#[test]
+fn svg_widgets_are_printed_as_vectors() {
+    use imaging_krilla::usvg;
+    use masonry::layout::AsUnit;
+    use masonry::properties::Dimensions;
+    use masonry::widgets::Svg;
+
+    let xml = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+        <circle cx="50" cy="50" r="40" fill="#2060d0"/>
+        <rect x="10" y="10" width="30" height="20" fill="#d03030"/>
+    </svg>"##;
+    let tree = usvg::Tree::from_str(xml, &usvg::Options::default()).unwrap();
+    let svg = Svg::new(Arc::new(tree))
+        .prepare()
+        .with_props(Dimensions::fixed(200.px(), 200.px()));
+    let mut root = headless(
+        Flex::column().with_fixed(svg).prepare(),
+        Size::new(220., 220.),
+    );
+    let background = Color::WHITE;
+    let capture = capture(root.render_root()).with_background(Some(background));
+    assert_eq!(capture.svgs.len(), 1);
+    let pdf = write_snapshot(&capture, &SnapshotOptions::default()).unwrap();
+    pdf.save(out_dir().join("svg_snapshot.pdf")).unwrap();
+    let has_image = pdf
+        .bytes
+        .windows(b"/Subtype/Image".len())
+        .any(|w| w == b"/Subtype/Image");
+    assert!(
+        !has_image,
+        "the SVG should be drawn as vector paths, not as an image"
+    );
+    assert_pixel_parity("svg_snapshot", &capture, &pdf.bytes, background);
+}

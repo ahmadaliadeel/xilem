@@ -411,7 +411,8 @@ impl PdfWriter {
                     self.options.sink.clone(),
                 );
                 sink.set_viewport_clip(item.clip);
-                let mut semantic = SemanticSink::new(sink, &capture.access, item.filter, tagging);
+                let mut semantic =
+                    SemanticSink::new(sink, &capture.access, &capture.svgs, item.filter, tagging);
                 if let Some(background) = capture.background {
                     let area = item.clip.unwrap_or(capture.content_bounds);
                     Painter::new(&mut semantic).fill_rect(area, background);

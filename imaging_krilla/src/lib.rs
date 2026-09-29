@@ -46,6 +46,7 @@
 //! # Feature flags
 //!
 //! - `raster-fallback` (default): rasterize blurred rounded rectangles with `vello_cpu`.
+//! - `svg` (default): draw `usvg` trees as vector graphics with `krilla-svg`.
 
 // LINEBENDER LINT SET - lib.rs - v3
 // See https://linebender.org/wiki/canonical-lints/
@@ -82,6 +83,8 @@ use kurbo::{Affine, BezPath, Rect};
 use peniko::{BrushRef, Compose, Extend, Style};
 
 pub use krilla;
+#[cfg(feature = "svg")]
+pub use usvg;
 
 /// Document-lifetime caches shared by all [`KrillaSink`]s writing to the same document.
 ///
@@ -313,6 +316,32 @@ impl<'s, 'p> KrillaSink<'s, 'p> {
         let viewport = self.viewport;
         self.set_viewport_clip(None);
         viewport
+    }
+
+    /// Draws an SVG tree as vector graphics.
+    ///
+    /// `transform` maps the tree's coordinates (in which it has the size `tree.size()`) to
+    /// input coordinates. Returns `false` if the tree could not be drawn.
+    #[cfg(feature = "svg")]
+    pub fn draw_svg(&mut self, transform: Affine, tree: &usvg::Tree) -> bool {
+        use krilla_svg::{SurfaceExt as _, SvgSettings};
+        let tree_size = tree.size();
+        let Some(size) = Size::from_wh(tree_size.width(), tree_size.height()) else {
+            return false;
+        };
+        self.sync_clips();
+        self.surface
+            .push_transform(&convert::transform(self.base * transform));
+        let drawn = self
+            .surface
+            .draw_svg(tree, size, SvgSettings::default())
+            .is_some();
+        self.surface.pop();
+        if !drawn {
+            self.stats
+                .unsupported("SVG trees that krilla-svg can't draw");
+        }
+        drawn
     }
 
     /// Start a tagged content section (see [`krilla::tagging`]).

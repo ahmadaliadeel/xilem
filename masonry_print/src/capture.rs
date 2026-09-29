@@ -3,9 +3,15 @@
 
 //! Capturing the paint output and semantics of a render root.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use imaging_krilla::usvg::Tree;
 use masonry::app::{RenderRoot, VisualLayerPlan};
+use masonry::core::{Widget, WidgetRef};
 use masonry::kurbo::{Rect, Size};
 use masonry::peniko::Color;
+use masonry::widgets::Svg;
 
 use crate::access::AccessIndex;
 
@@ -24,6 +30,8 @@ pub struct Capture {
     pub content_bounds: Rect,
     /// Background color painted behind the content, if any.
     pub background: Option<Color>,
+    /// The SVG trees of `Svg` widgets, by raw widget id, so they can be printed as vectors.
+    pub svgs: HashMap<u64, Arc<Tree>>,
 }
 
 impl Capture {
@@ -52,12 +60,25 @@ pub fn capture(root: &mut RenderRoot) -> Capture {
         f64::from(physical.width) / scale,
         f64::from(physical.height) / scale,
     );
-    let content_bounds = root.get_layer_root(0).ctx().bounding_box();
+    let base_layer = root.get_layer_root(0);
+    let content_bounds = base_layer.ctx().bounding_box();
+    let mut svgs = HashMap::new();
+    collect_svgs(base_layer, &mut svgs);
     Capture {
         plan,
         access: AccessIndex::new(&tree),
         window_size,
         content_bounds,
         background: None,
+        svgs,
+    }
+}
+
+fn collect_svgs(widget: WidgetRef<'_, dyn Widget>, svgs: &mut HashMap<u64, Arc<Tree>>) {
+    if let Some(svg) = widget.downcast::<Svg>() {
+        svgs.insert(widget.id().to_raw(), svg.inner().tree().clone());
+    }
+    for child in widget.children() {
+        collect_svgs(child, svgs);
     }
 }

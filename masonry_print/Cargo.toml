@@ -26,7 +26,7 @@ testing = ["dep:hayro", "dep:lopdf"]
 [dependencies]
 hayro = { workspace = true, optional = true }
 lopdf = { workspace = true, optional = true }
-imaging_krilla = { workspace = true, features = ["raster-fallback"] }
+imaging_krilla = { workspace = true, features = ["raster-fallback", "svg"] }
 masonry.workspace = true
 tracing.workspace = true
 
