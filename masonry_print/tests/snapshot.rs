@@ -169,3 +169,17 @@ fn svg_widgets_are_printed_as_vectors() {
     );
     assert_pixel_parity("svg_snapshot", &capture, &pdf.bytes, background);
 }
+
+#[test]
+#[ignore = "queries the system's printers"]
+fn list_system_printers() {
+    let printers = masonry_print::os_print::list_printers().unwrap();
+    for printer in &printers {
+        eprintln!(
+            "{} {}",
+            if printer.is_default { "*" } else { " " },
+            printer.name
+        );
+    }
+    assert!(!printers.is_empty(), "expected at least one printer");
+}
