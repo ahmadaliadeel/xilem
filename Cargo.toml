@@ -9,6 +9,9 @@ members = [
     "masonry_imaging",
     "masonry_testing",
     "masonry_winit",
+    "imaging_krilla",
+    "masonry_print",
+    "xilem_print",
 
     "xilem_web",
     "xilem_web/web_examples/counter",
@@ -48,6 +51,9 @@ masonry_core = { version = "0.4.0", path = "masonry_core", default-features = fa
 masonry_imaging = { version = "0.4.0", path = "masonry_imaging", default-features = false }
 masonry_testing = { version = "0.4.0", path = "masonry_testing", default-features = false }
 masonry_winit = { version = "0.4.0", path = "masonry_winit", default-features = false }
+imaging_krilla = { version = "0.4.0", path = "imaging_krilla", default-features = false }
+masonry_print = { version = "0.4.0", path = "masonry_print", default-features = false }
+xilem_print = { version = "0.4.0", path = "xilem_print", default-features = false }
 xilem_core = { version = "0.4.0", path = "xilem_core" }
 xilem_masonry = { version = "0.4.0", path = "xilem_masonry" }
 xilem = { version = "0.4.0", path = "xilem", default-features = false }
@@ -96,6 +102,13 @@ reqwest = { version = "0.12.28", default-features = false, features = [
     "rustls-tls",
 ] }
 divan = "0.1.21"
+# PDF generation, used by imaging_krilla and masonry_print.
+krilla = { version = "0.8.2", default-features = false, features = ["raster-images"] }
+skrifa = "0.40.0"
+fontique = "0.8.0"
+# PDF rendering/parsing, only used in tests.
+hayro = "0.7.1"
+lopdf = { version = "0.39.0", default-features = false }
 
 [workspace.lints]
 # unsafe code is not allowed in Xilem or Masonry

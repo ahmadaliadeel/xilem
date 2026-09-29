@@ -1,0 +1,39 @@
+[package]
+name = "imaging_krilla"
+version.workspace = true # We mimic Xilem's version
+description = "A krilla (PDF) backend for the imaging crate: vector paths, gradients, images and real, selectable text."
+keywords = ["pdf", "graphics", "vector", "krilla", "print"]
+categories = ["graphics", "rendering", "text-processing"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+# There are no platform specific docs.
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
+[features]
+default = ["raster-fallback"]
+# Rasterize content with no PDF equivalent (blurs, filters, box shadows) with vello_cpu.
+raster-fallback = ["dep:imaging_vello_cpu"]
+
+[dependencies]
+imaging.workspace = true
+imaging_vello_cpu = { workspace = true, optional = true }
+krilla.workspace = true
+kurbo.workspace = true
+peniko.workspace = true
+skrifa.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+hayro.workspace = true
+image = { workspace = true, features = ["png"] }
+imaging_vello_cpu.workspace = true
+
+[lints]
+workspace = true
