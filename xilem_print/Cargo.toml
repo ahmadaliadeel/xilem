@@ -1,11 +1,37 @@
 [package]
 name = "xilem_print"
-version.workspace = true
+version.workspace = true # We mimic Xilem's version
+description = "Printing and vector PDF export for Xilem: paginated documents, window snapshots, tagged PDF, PDF/A and RTL text."
+keywords = ["gui", "pdf", "print", "xilem", "rtl"]
+categories = ["gui", "internationalization", "accessibility", "text-processing"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+readme = "README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+# There are no platform specific docs.
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
+[features]
+default = ["noto-fonts"]
+# Bundle the Noto Naskh Arabic and Noto Nastaliq Urdu fonts (SIL OFL 1.1, about 1 MB).
+noto-fonts = ["masonry_print/noto-fonts"]
+
+[dependencies]
+masonry_print.workspace = true
+masonry_winit.workspace = true
+tracing.workspace = true
+xilem.workspace = true
+
+[dev-dependencies]
+image = { workspace = true, features = ["png"] }
+masonry_print = { workspace = true, features = ["testing", "noto-fonts"] }
+masonry_testing.workspace = true
+xilem = { workspace = true, features = ["imaging_vello"] }
 
 [lints]
 workspace = true

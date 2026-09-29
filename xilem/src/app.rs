@@ -7,7 +7,9 @@ use std::sync::Arc;
 use masonry::core::DefaultProperties;
 use masonry::peniko::{Blob, Color};
 use masonry::theme::{BACKGROUND_COLOR, default_property_set};
-use masonry_winit::app::{EventLoopBuilder, MasonryState, MasonryUserEvent, NewWindow, WindowId};
+use masonry_winit::app::{
+    AppDriver, EventLoopBuilder, MasonryState, MasonryUserEvent, NewWindow, WindowId,
+};
 use tokio::runtime::Runtime as TokioRuntime;
 use winit::error::EventLoopError;
 
@@ -182,7 +184,20 @@ where
     }
 
     /// Run app with custom window attributes.
-    pub fn run_in(mut self, mut event_loop: EventLoopBuilder) -> Result<(), EventLoopError> {
+    pub fn run_in(self, event_loop: EventLoopBuilder) -> Result<(), EventLoopError> {
+        self.run_in_with(event_loop, |driver| driver)
+    }
+
+    /// Run app with custom window attributes, wrapping the app driver.
+    ///
+    /// `wrap_driver` receives the [`MasonryDriver`] of the app and returns the driver to run,
+    /// which usually delegates to the `MasonryDriver`. This lets libraries add functionality
+    /// which needs access to the windows' render roots, such as printing.
+    pub fn run_in_with<D: AppDriver + 'static>(
+        mut self,
+        mut event_loop: EventLoopBuilder,
+        wrap_driver: impl FnOnce(MasonryDriver<State, Logic>) -> D,
+    ) -> Result<(), EventLoopError> {
         let event_loop = event_loop.build()?;
         let proxy = event_loop.create_proxy();
         let default_properties = self
@@ -191,7 +206,7 @@ where
             .unwrap_or_else(default_property_set);
         let (driver, windows) =
             self.into_driver_and_windows(move |event| proxy.send_event(event).map_err(|err| err.0));
-        masonry_winit::app::run_with(event_loop, windows, driver, default_properties)
+        masonry_winit::app::run_with(event_loop, windows, wrap_driver(driver), default_properties)
     }
 
     /// Builds the [`MasonryDriver`] and the initial windows.

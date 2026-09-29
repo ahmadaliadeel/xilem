@@ -6939,6 +6939,14 @@ dependencies = [
 [[package]]
 name = "xilem_print"
 version = "0.4.0"
+dependencies = [
+ "image",
+ "masonry_print",
+ "masonry_testing",
+ "masonry_winit",
+ "tracing",
+ "xilem",
+]
 
 [[package]]
 name = "xilem_web"

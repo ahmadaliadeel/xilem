@@ -293,6 +293,28 @@ where
     }
 }
 
+impl<State, Logic, WindowIter> MasonryDriver<State, Logic>
+where
+    State: AppState + 'static,
+    Logic: FnMut(&mut State) -> WindowIter,
+    WindowIter: Iterator<Item = WindowView<State>>,
+{
+    /// Modifies the app state from outside the view tree, and rebuilds the views.
+    ///
+    /// This is useful for drivers wrapping a `MasonryDriver` (see [`Xilem::run_in_with`]),
+    /// which need to report results of work done with access to the [`DriverCtx`]
+    /// (such as printing a window) back to the app.
+    ///
+    /// [`Xilem::run_in_with`]: crate::Xilem::run_in_with
+    pub fn update_state(&mut self, ctx: &mut DriverCtx<'_>, f: impl FnOnce(&mut State)) {
+        f(&mut self.state);
+        self.run_logic(ctx);
+        if !self.state.keep_running() {
+            ctx.exit();
+        }
+    }
+}
+
 impl<State, Logic, WindowIter> AppDriver for MasonryDriver<State, Logic>
 where
     State: AppState + 'static,
