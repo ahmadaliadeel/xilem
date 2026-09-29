@@ -12,13 +12,14 @@ use tracing::{Span, trace_span};
 use crate::core::{
     AccessCtx, ArcStr, BrushIndex, ChildrenIds, LayoutCtx, MeasureCtx, NoAction, PaintCtx,
     PropertiesMut, PropertiesRef, RegisterCtx, StyleProperty, StyleSet, Update, UpdateCtx,
-    UsesProperty, Widget, WidgetId, WidgetMut, render_text, set_accesskit_brush_properties,
+    UsesProperty, Widget, WidgetId, WidgetMut, render_text_with_source,
+    set_accesskit_brush_properties,
 };
 use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, Point, Size};
 use crate::layout::{AsUnit, LenReq, Length};
 use crate::parley::{FontContext, Layout, LayoutAccessibility, LayoutContext};
-use crate::properties::{ContentColor, LineBreaking};
+use crate::properties::{BaseDirection, ContentColor, LineBreaking};
 use crate::theme::default_text_styles;
 use crate::util::debug_panic;
 use crate::{TextAlign, TextAlignOptions, theme};
@@ -49,6 +50,10 @@ pub struct Label {
     active_layout: usize,
 
     text: ArcStr,
+    /// The text given to Parley: `text`, prefixed with a direction mark if the
+    /// [`BaseDirection`] is not `Auto`.
+    layout_text: ArcStr,
+    base_direction: BaseDirection,
     styles: StyleSet,
     text_alignment: TextAlign,
 
@@ -181,11 +186,14 @@ impl Label {
     pub fn new(text: impl Into<ArcStr>) -> Self {
         let mut styles = StyleSet::new(theme::TEXT_SIZE_NORMAL);
         default_text_styles(&mut styles);
+        let text = text.into();
         Self {
             layouts: Vec::new(),
             cache_time: 0,
             active_layout: usize::MAX,
-            text: text.into(),
+            layout_text: text.clone(),
+            base_direction: BaseDirection::Auto,
+            text,
             styles,
             text_alignment: TextAlign::Start,
             hint: true,
@@ -329,6 +337,7 @@ impl Label {
     /// Replaces the text of this widget.
     pub fn set_text(this: &mut WidgetMut<'_, Self>, new_text: impl Into<ArcStr>) {
         this.widget.text = new_text.into();
+        this.widget.update_layout_text();
 
         this.widget.clear_cache();
         this.ctx.request_layout();
@@ -379,6 +388,23 @@ impl Label {
         self.cache_time
     }
 
+    /// Recomputes the text given to Parley from `text` and `base_direction`.
+    fn update_layout_text(&mut self) {
+        self.layout_text = match self.base_direction.direction_mark() {
+            Some(mark) => format!("{mark}{}", self.text).into(),
+            None => self.text.clone(),
+        };
+    }
+
+    /// Applies the current [`BaseDirection`] property, invalidating the layouts if it changed.
+    fn sync_base_direction(&mut self, base_direction: BaseDirection) {
+        if self.base_direction != base_direction {
+            self.base_direction = base_direction;
+            self.update_layout_text();
+            self.clear_cache();
+        }
+    }
+
     /// Builds the text layout and breaks the text into lines.
     ///
     /// Backed by a cache layer.
@@ -421,11 +447,11 @@ impl Label {
 
         // TODO: Should we use a different scale?
         // See https://github.com/linebender/xilem/issues/1264
-        let mut builder = layout_ctx.ranged_builder(font_ctx, &self.text, 1.0, true);
+        let mut builder = layout_ctx.ranged_builder(font_ctx, &self.layout_text, 1.0, true);
         for prop in self.styles.inner().values() {
             builder.push_default(prop.to_owned());
         }
-        builder.build_into(&mut layout.layout, &self.text);
+        builder.build_into(&mut layout.layout, &self.layout_text);
 
         layout.layout.break_all_lines(max_advance);
 
@@ -472,6 +498,7 @@ impl Label {
 
 impl UsesProperty<ContentColor> for Label {}
 impl UsesProperty<LineBreaking> for Label {}
+impl UsesProperty<BaseDirection> for Label {}
 
 // --- MARK: IMPL WIDGET
 impl Widget for Label {
@@ -486,6 +513,7 @@ impl Widget for Label {
     fn property_changed(&mut self, ctx: &mut UpdateCtx<'_>, property_type: TypeId) {
         LineBreaking::prop_changed(ctx, property_type);
         ContentColor::prop_changed(ctx, property_type);
+        BaseDirection::prop_changed(ctx, property_type);
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
@@ -515,6 +543,7 @@ impl Widget for Label {
 
         let cache = ctx.property_cache();
         let line_break_mode = props.get::<LineBreaking>(cache);
+        self.sync_base_direction(*props.get::<BaseDirection>(cache));
 
         // Calculate the max advance for the inline axis, with None indicating unbounded.
         let max_advance = match line_break_mode {
@@ -568,6 +597,7 @@ impl Widget for Label {
 
         let cache = ctx.property_cache();
         let line_break_mode = props.get::<LineBreaking>(cache);
+        self.sync_base_direction(*props.get::<BaseDirection>(cache));
 
         let inline_space = size.get_coord(inline) as f32;
 
@@ -612,12 +642,14 @@ impl Widget for Label {
 
         let layout = &self.layouts[self.active_layout];
 
-        render_text(
+        render_text_with_source(
             painter,
             Affine::IDENTITY,
             &layout.layout,
             &[text_color.color.into()],
             self.hint,
+            ctx.paint_annotations_enabled()
+                .then_some(self.layout_text.as_ref()),
         );
     }
 
@@ -644,7 +676,7 @@ impl Widget for Label {
         let layout = &self.layouts[self.active_layout];
 
         self.accessibility.build_nodes(
-            self.text.as_ref(),
+            self.layout_text.as_ref(),
             &layout.layout,
             ctx.tree_update(),
             node,

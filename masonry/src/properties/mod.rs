@@ -8,6 +8,7 @@
 mod animation;
 mod checkmark;
 mod content_color;
+mod direction;
 mod gap;
 mod line_breaking;
 mod object_fit;
@@ -25,6 +26,7 @@ pub mod types;
 pub use animation::*;
 pub use checkmark::*;
 pub use content_color::*;
+pub use direction::*;
 pub use gap::*;
 pub use line_breaking::*;
 pub use object_fit::*;

@@ -10,6 +10,7 @@ use crate::kurbo::{Point, Rect, Vec2};
 mod accessibility;
 mod action;
 mod anim;
+mod annotations;
 mod compose;
 mod event;
 mod layout;

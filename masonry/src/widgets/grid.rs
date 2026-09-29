@@ -14,7 +14,7 @@ use crate::core::{
 use crate::imaging::Painter;
 use crate::kurbo::{Axis, Point, Size};
 use crate::layout::{AsUnit, LayoutSize, LenDef, LenReq, Length};
-use crate::properties::Gap;
+use crate::properties::{Gap, LayoutDirection};
 use crate::util::debug_panic;
 
 /// A widget that arranges its children in a grid.
@@ -837,6 +837,7 @@ impl CollectionWidget<GridParams> for Grid {
 }
 
 impl UsesProperty<Gap> for Grid {}
+impl UsesProperty<LayoutDirection> for Grid {}
 
 // --- MARK: IMPL WIDGET
 impl Widget for Grid {
@@ -850,6 +851,7 @@ impl Widget for Grid {
 
     fn property_changed(&mut self, ctx: &mut UpdateCtx<'_>, property_type: TypeId) {
         Gap::prop_changed(ctx, property_type);
+        LayoutDirection::prop_changed(ctx, property_type);
     }
 
     fn measure(
@@ -896,6 +898,8 @@ impl Widget for Grid {
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, props: &PropertiesRef<'_>, size: Size) {
         let cache = ctx.property_cache();
         let gap = props.get::<Gap>(cache);
+        let rtl = props.get::<LayoutDirection>(cache).is_rtl();
+        let grid_width = size.width;
 
         let gap_length = gap.gap.get();
 
@@ -949,7 +953,11 @@ impl Widget for Grid {
 
             ctx.run_layout(&mut child.widget, size);
 
-            let origin = Point::new(col_offsets[col], row_offsets[row]);
+            let mut origin = Point::new(col_offsets[col], row_offsets[row]);
+            if rtl {
+                // Mirror the layout horizontally: column 0 is on the right.
+                origin.x = grid_width - origin.x - size.width;
+            }
             ctx.place_child(&mut child.widget, origin);
 
             let (first_baseline, last_baseline) = ctx.child_aligned_baselines(&child.widget);

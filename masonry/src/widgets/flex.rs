@@ -14,8 +14,8 @@ use crate::core::{
 use crate::imaging::Painter;
 use crate::kurbo::{Axis, Size};
 use crate::layout::{AsUnit, LayoutSize, LenDef, LenReq, Length};
-use crate::properties::Gap;
 use crate::properties::types::{CrossAxisAlignment, MainAxisAlignment};
+use crate::properties::{Gap, LayoutDirection};
 use crate::util::Sanitize;
 
 /// A container with either horizontal or vertical layout.
@@ -677,6 +677,7 @@ fn get_spacing(alignment: MainAxisAlignment, extra: f64, child_count: usize) -> 
 }
 
 impl UsesProperty<Gap> for Flex {}
+impl UsesProperty<LayoutDirection> for Flex {}
 
 // --- MARK: IMPL WIDGET
 impl Widget for Flex {
@@ -690,6 +691,7 @@ impl Widget for Flex {
 
     fn property_changed(&mut self, ctx: &mut UpdateCtx<'_>, property_type: TypeId) {
         Gap::prop_changed(ctx, property_type);
+        LayoutDirection::prop_changed(ctx, property_type);
     }
 
     fn measure(
@@ -922,6 +924,7 @@ impl Widget for Flex {
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, props: &PropertiesRef<'_>, size: Size) {
         let cache = ctx.property_cache();
         let gap = props.get::<Gap>(cache);
+        let rtl = props.get::<LayoutDirection>(cache).is_rtl();
         let gap_length = gap.gap.get();
         let gap_count = self.children.len().saturating_sub(1);
 
@@ -1139,7 +1142,11 @@ impl Widget for Flex {
                         }
                     };
 
-                    let child_origin = main.pack_point(main_offset, child_origin_cross);
+                    let mut child_origin = main.pack_point(main_offset, child_origin_cross);
+                    if rtl {
+                        // Mirror the layout horizontally.
+                        child_origin.x = size.width - child_origin.x - child_size.width;
+                    }
                     ctx.place_child(widget, child_origin);
 
                     main_offset += child_size.get_coord(main);

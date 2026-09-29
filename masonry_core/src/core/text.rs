@@ -31,13 +31,15 @@ pub type StyleProperty = parley::StyleProperty<'static, BrushIndex>;
 /// A set of styles specialised for use within Masonry.
 pub type StyleSet = parley::StyleSet<BrushIndex>;
 
+use std::ops::Range;
+
 use accesskit::{TextDecoration, TextDecorationStyle};
 use kurbo::{Affine, Line, Stroke};
-use parley::{Layout, PositionedLayoutItem, Style};
+use parley::{Layout, PositionedLayoutItem, Run, Style};
 use peniko::{Brush, Fill};
 use smallvec::SmallVec;
 
-use crate::imaging::{PaintSink, Painter, record::Glyph};
+use crate::imaging::{ContextRef, PaintSink, Painter, record::Glyph};
 
 /// A function that renders laid out glyphs through imaging's [`Painter`].
 ///
@@ -50,11 +52,175 @@ pub fn render_text(
     // TODO: Should this be part of `BrushIndex` (i.e. `brushes`)?
     hint: bool,
 ) {
+    render_text_with_source(painter, transform, layout, brushes, hint, None);
+}
+
+/// The name of the [context annotation](ContextRef) that [`render_text_with_source`] wraps
+/// around each glyph run.
+///
+/// Its value is a string, which [`GlyphRunSource::decode`] turns back into a [`GlyphRunSource`].
+pub const GLYPH_RUN_SOURCE_CONTEXT: &str = "masonry.glyph_run_source";
+
+/// The source text of a glyph run, with the text range of each glyph.
+///
+/// This is attached to glyph runs as a [context annotation](GLYPH_RUN_SOURCE_CONTEXT) by
+/// [`render_text_with_source`], so that backends which output text (e.g. PDF) can make text
+/// selectable and searchable.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GlyphRunSource {
+    /// The text covered by the glyph run, in logical order.
+    pub text: String,
+    /// For each glyph of the run (in drawing order), the byte range in `text`
+    /// of the cluster the glyph belongs to.
+    pub glyph_ranges: Vec<Range<usize>>,
+}
+
+impl GlyphRunSource {
+    const VERSION: &str = "v1";
+
+    /// Encode this source as a string, for use as a context annotation value.
+    pub fn encode(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::with_capacity(self.text.len() + self.glyph_ranges.len() * 6 + 4);
+        out.push_str(Self::VERSION);
+        out.push(';');
+        for (i, range) in self.glyph_ranges.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            let _ = write!(out, "{}:{}", range.start, range.end);
+        }
+        out.push(';');
+        out.push_str(&self.text);
+        out
+    }
+
+    /// Decode a source encoded with [`encode`](Self::encode).
+    pub fn decode(encoded: &str) -> Option<Self> {
+        let mut parts = encoded.splitn(3, ';');
+        if parts.next()? != Self::VERSION {
+            return None;
+        }
+        let ranges = parts.next()?;
+        let text = parts.next()?.to_string();
+        let mut glyph_ranges = Vec::new();
+        if !ranges.is_empty() {
+            for range in ranges.split(',') {
+                let (start, end) = range.split_once(':')?;
+                let (start, end) = (start.parse().ok()?, end.parse().ok()?);
+                if start > end || end > text.len() {
+                    return None;
+                }
+                glyph_ranges.push(start..end);
+            }
+        }
+        Some(Self { text, glyph_ranges })
+    }
+}
+
+/// Whether `c` is an invisible bidi formatting character.
+///
+/// Clusters consisting only of these are left out of [`GlyphRunSource`]s, so that
+/// direction marks (e.g. those added to force a base direction) don't end up in
+/// copied text.
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// Compute the text range of each glyph of `run`, in visual order.
+///
+/// Glyphs of a cluster get the text range of that cluster. Clusters without glyphs
+/// (ligature continuations, default ignorables) are merged into the preceding cluster.
+fn run_glyph_ranges(run: &Run<'_, BrushIndex>, text: &str) -> Vec<Range<usize>> {
+    let clusters: Vec<_> = run.clusters().collect();
+    // Text range of each logical cluster, after merging glyph-less clusters.
+    let mut ranges: Vec<Option<Range<usize>>> = vec![None; clusters.len()];
+    let mut owner: Option<usize> = None;
+    let mut pending_start: Option<usize> = None;
+    for (i, cluster) in clusters.iter().enumerate() {
+        let range = cluster.text_range();
+        let has_glyphs = cluster.glyphs().next().is_some();
+        if has_glyphs {
+            let start = pending_start.take().unwrap_or(range.start).min(range.start);
+            ranges[i] = Some(start..range.end);
+            owner = Some(i);
+        } else if text
+            .get(range.clone())
+            .is_some_and(|s| s.chars().all(is_bidi_control))
+        {
+            // Drop direction marks.
+        } else if let Some(owner) = owner {
+            if let Some(owner_range) = &mut ranges[owner] {
+                owner_range.end = owner_range.end.max(range.end);
+            }
+        } else {
+            pending_start.get_or_insert(range.start);
+        }
+    }
+
+    let mut glyph_ranges = Vec::new();
+    for visual_index in 0..clusters.len() {
+        let Some(logical) = run.visual_to_logical(visual_index) else {
+            continue;
+        };
+        let Some(range) = &ranges[logical] else {
+            continue;
+        };
+        for _ in clusters[logical].glyphs() {
+            glyph_ranges.push(range.clone());
+        }
+    }
+    glyph_ranges
+}
+
+/// Like [`render_text`], but annotates each glyph run with its source text.
+///
+/// If `source` is `Some`, it must be the text the `layout` was built from.
+/// Each glyph run is then wrapped in a [context annotation](ContextRef) named
+/// [`GLYPH_RUN_SOURCE_CONTEXT`] whose value is an [encoded](GlyphRunSource::encode)
+/// [`GlyphRunSource`]. Backends that don't care about text ignore it, so this doesn't
+/// change the rendered output.
+pub fn render_text_with_source(
+    painter: &mut Painter<'_, impl PaintSink + ?Sized>,
+    transform: Affine,
+    layout: &Layout<BrushIndex>,
+    brushes: &[Brush],
+    hint: bool,
+    source: Option<&str>,
+) {
     for line in layout.lines() {
+        // Glyph runs are slices of the glyphs of a (per-line) run, split by style.
+        // Track which run we are in and how many of its glyphs we have seen so far.
+        let mut run_cursor: Option<(usize, usize, Vec<Range<usize>>)> = None;
         for item in line.items() {
             let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                 continue;
             };
+            let annotation = source.and_then(|text| {
+                let run = glyph_run.run();
+                let glyph_count = glyph_run.glyphs().count();
+                let (_, offset, ranges) = match &mut run_cursor {
+                    Some(cursor) if cursor.0 == run.index() => cursor,
+                    cursor => cursor.insert((run.index(), 0, run_glyph_ranges(run, text))),
+                };
+                let ranges = ranges.get(*offset..*offset + glyph_count)?;
+                *offset += glyph_count;
+                let start = ranges.iter().map(|r| r.start).min()?;
+                let end = ranges.iter().map(|r| r.end).max()?;
+                Some(
+                    GlyphRunSource {
+                        text: text.get(start..end)?.to_string(),
+                        glyph_ranges: ranges
+                            .iter()
+                            .map(|r| r.start - start..r.end - start)
+                            .collect(),
+                    }
+                    .encode(),
+                )
+            });
             let style = glyph_run.style();
             // We draw underlines under the text, then the strikethrough on top, following:
             // https://drafts.csswg.org/css-text-decor/#painting-order
@@ -109,6 +275,13 @@ pub fn render_text(
                     }
                 })
                 .collect();
+            if let Some(annotation) = &annotation {
+                painter.push_context_ref(ContextRef::named_str(
+                    GLYPH_RUN_SOURCE_CONTEXT,
+                    annotation,
+                    None,
+                ));
+            }
             painter
                 .glyphs(font, brush)
                 .hint(hint)
@@ -117,6 +290,9 @@ pub fn render_text(
                 .font_size(font_size)
                 .normalized_coords(coords)
                 .draw(&peniko::Style::Fill(Fill::NonZero), &glyphs);
+            if annotation.is_some() {
+                painter.pop_context();
+            }
 
             if let Some(strikethrough) = &style.strikethrough {
                 let strikethrough_brush = &brushes[strikethrough.brush.0];

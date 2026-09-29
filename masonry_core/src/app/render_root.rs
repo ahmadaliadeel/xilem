@@ -173,6 +173,11 @@ pub(crate) struct RenderRootState {
 
     /// Whether to paint widget's bounding boxes and other visual helpers.
     pub(crate) debug_paint: bool,
+
+    /// Whether paint output is annotated with widget ids and text sources.
+    ///
+    /// See [`RenderRoot::set_paint_annotations`].
+    pub(crate) paint_annotations: bool,
 }
 
 pub(crate) struct MutateCallback {
@@ -377,6 +382,7 @@ impl RenderRoot {
                 access_tree_active: false,
                 scale_factor,
                 debug_paint,
+                paint_annotations: false,
             },
             property_arena: PropertyArena::new(default_properties),
             widget_arena: WidgetArena {
@@ -620,6 +626,60 @@ impl RenderRoot {
         let tree_update = access_tree_active
             .then(|| run_accessibility_pass(self, self.global_state.scale_factor));
         (visual_layers, tree_update)
+    }
+
+    /// Enables or disables paint annotations.
+    ///
+    /// When enabled, the [`VisualLayerPlan`] returned by [`redraw`](Self::redraw) contains
+    /// [context annotations](crate::imaging::ContextRef) that backends can use to recover
+    /// document semantics, e.g. to write tagged, searchable PDF documents:
+    ///
+    /// - Each widget's paint output (including its children) is wrapped in a
+    ///   [`ContextRef::widget`](crate::imaging::ContextRef::widget) context with the raw
+    ///   [`WidgetId`].
+    /// - Text widgets wrap each glyph run in a [`GLYPH_RUN_SOURCE_CONTEXT`](crate::core::GLYPH_RUN_SOURCE_CONTEXT)
+    ///   context carrying its source text.
+    ///
+    /// Annotations don't change the rendered output. They are disabled by default,
+    /// as they have a small cost. Changing this setting repaints all widgets.
+    pub fn set_paint_annotations(&mut self, enabled: bool) {
+        if self.global_state.paint_annotations != enabled {
+            self.global_state.paint_annotations = enabled;
+            self.request_render_all();
+        }
+    }
+
+    /// Returns whether paint annotations are enabled.
+    ///
+    /// See [`set_paint_annotations`](Self::set_paint_annotations).
+    pub fn paint_annotations(&self) -> bool {
+        self.global_state.paint_annotations
+    }
+
+    /// Builds a complete accessibility tree of the current widget tree, in logical coordinates.
+    ///
+    /// Unlike the tree update returned by [`redraw`](Self::redraw), this doesn't require the
+    /// accessibility tree to be [enabled](WindowEvent::EnableAccessTree), and always contains
+    /// every node.
+    /// If the accessibility tree is active, the next [`redraw`](Self::redraw) will again
+    /// contain every node, so the platform adapter is kept in sync.
+    ///
+    /// This is useful to export documents with semantic information, e.g. tagged PDF.
+    pub fn full_access_tree(&mut self) -> TreeUpdate {
+        self.run_rewrite_passes();
+        self.request_access_all();
+        let update = run_accessibility_pass(self, 1.0);
+        self.request_access_all();
+        update
+    }
+
+    /// Gives mutable access to the font collection, e.g. to register fallback fonts.
+    ///
+    /// All text is laid out again afterwards.
+    pub fn edit_font_collection<R>(&mut self, f: impl FnOnce(&mut Collection) -> R) -> R {
+        let result = f(&mut self.global_state.font_context.collection);
+        run_update_fonts_pass(self);
+        result
     }
 
     /// Returns the current icon that the mouse should display.

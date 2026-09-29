@@ -2180,4 +2180,13 @@ impl PaintCtx<'_> {
     pub fn debug_color(&self) -> Color {
         get_debug_color(self.widget_id().to_raw())
     }
+
+    /// Whether paint annotations are enabled.
+    ///
+    /// When this is true, text widgets should pass their source text to
+    /// [`render_text_with_source`](crate::core::render_text_with_source).
+    /// See [`RenderRoot::set_paint_annotations`](crate::app::RenderRoot::set_paint_annotations).
+    pub fn paint_annotations_enabled(&self) -> bool {
+        self.global_state.paint_annotations
+    }
 }

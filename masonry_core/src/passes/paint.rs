@@ -13,8 +13,8 @@ use crate::core::{
     DefaultProperties, PaintCtx, PaintLayerMode, PropertiesRef, PropertyArena, WidgetArenaNode,
     WidgetId,
 };
-use crate::imaging::record::{Clip, Geometry, Scene};
-use crate::imaging::{PaintSink, Painter};
+use crate::imaging::record::{Clip, Command, Geometry, Scene};
+use crate::imaging::{ContextRef, PaintSink, Painter};
 use crate::passes::{enter_span_if, recurse_on_children};
 use crate::util::get_debug_color;
 
@@ -23,6 +23,10 @@ struct LayerCollector {
     layers: Vec<VisualLayer>,
     current_owner_id: WidgetId,
     transform: Affine,
+    /// Widget contexts which are currently open (see `RenderRoot::set_paint_annotations`).
+    ///
+    /// These are closed and re-opened when the current layer is split.
+    open_contexts: Vec<u64>,
 }
 
 impl LayerCollector {
@@ -32,6 +36,7 @@ impl LayerCollector {
             layers: Vec::new(),
             current_owner_id: root_id,
             transform,
+            open_contexts: Vec::new(),
         }
     }
 
@@ -39,13 +44,39 @@ impl LayerCollector {
         &mut self.current_scene
     }
 
+    fn push_widget_context(&mut self, id: WidgetId) {
+        let id = id.to_raw();
+        self.current_scene
+            .push_context_ref(ContextRef::widget(id, None));
+        self.open_contexts.push(id);
+    }
+
+    fn pop_widget_context(&mut self) {
+        self.current_scene.pop_context();
+        self.open_contexts.pop();
+    }
+
     fn finish_current_layer(&mut self, allow_empty: bool) {
-        let empty_scene = Scene::new();
-        if !allow_empty && self.current_scene == empty_scene {
+        // A scene which only opens and closes contexts has no visible content.
+        let is_empty = self
+            .current_scene
+            .commands()
+            .iter()
+            .all(|command| matches!(command, Command::PushContext(_) | Command::PopContext));
+        if !allow_empty && is_empty {
             return;
         }
 
-        let scene = std::mem::replace(&mut self.current_scene, empty_scene);
+        // Close the open contexts in the finished scene, and re-open them in the next one,
+        // so that each layer's scene stays balanced.
+        for _ in &self.open_contexts {
+            self.current_scene.pop_context();
+        }
+        let scene = std::mem::replace(&mut self.current_scene, Scene::new());
+        for id in &self.open_contexts {
+            self.current_scene
+                .push_context_ref(ContextRef::widget(*id, None));
+        }
         self.layers.push(VisualLayer {
             kind: VisualLayerKind::Scene(scene),
             transform: self.transform,
@@ -167,6 +198,11 @@ fn paint_widget(
     let has_clip = state.clip_path.is_some();
     let paint_as_external = paint_layer_mode == PaintLayerMode::External;
 
+    let annotate = global_state.paint_annotations && !is_stashed;
+    if annotate {
+        layer_collector.push_widget_context(id);
+    }
+
     if !is_stashed && !paint_as_external {
         let Some((pre_scene, scene, _)) = &mut scene_cache.get(&id) else {
             debug_panic!(
@@ -267,6 +303,10 @@ fn paint_widget(
 
     if paint_as_external {
         layer_collector.push_external_layer(id, state.border_box());
+    }
+
+    if annotate {
+        layer_collector.pop_widget_context();
     }
 
     if matches!(

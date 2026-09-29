@@ -12,7 +12,8 @@ use crate::core::{
     AccessCtx, AccessEvent, ArcStr, BrushIndex, ChildrenIds, CursorIcon, EventCtx, Ime, LayoutCtx,
     MeasureCtx, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent, PointerUpdate,
     PropertiesMut, PropertiesRef, QueryCtx, RegisterCtx, StyleProperty, TextEvent, Update,
-    UpdateCtx, Widget, WidgetId, WidgetMut, render_text, set_accesskit_brush_properties,
+    UpdateCtx, Widget, WidgetId, WidgetMut, render_text_with_source,
+    set_accesskit_brush_properties,
 };
 use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, Point, Rect, Size};
@@ -1037,12 +1038,14 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
         let cache = ctx.property_cache();
         let text_color = props.get::<ContentColor>(cache);
 
-        render_text(
+        render_text_with_source(
             painter,
             Affine::IDENTITY,
             layout,
             &[text_color.color.into()],
             self.hint,
+            ctx.paint_annotations_enabled()
+                .then_some(self.editor.raw_text()),
         );
     }
 
